@@ -40,6 +40,13 @@ contract CreditManager is ICreditManager, ACLTrait, ReentrancyGuard {
     // Mapping between borrowers'/farmers' address and credit account
     mapping(address => address) public override creditAccounts;
 
+    // Mapping keeper address => credit account. Keepers can be registered by borrowers for automation
+    // purposes like rebalancing, e.g. triggered by gelato network.
+    mapping(address => address) public creditAccountsPerKeeper;
+
+    // Mapping credit account => all its keepers
+    mapping(address => address[]) public keepers;
+
     // Account manager - provides credit accounts to pool
     IAccountFactory internal immutable _accountFactory;
 
@@ -327,6 +334,10 @@ contract CreditManager is ICreditManager, ACLTrait, ReentrancyGuard {
         _accountFactory.returnCreditAccount(creditAccount); // F:[CM-10]
 
         // Release memory
+        for (uint256 i = 0; i < keepers[creditAccount].length; i++) {
+            delete creditAccountsPerKeeper[keepers[creditAccount][i]];
+        }
+        delete keepers[creditAccount];
         delete creditAccounts[borrower]; // F:[CM-10]
     }
 
@@ -842,6 +853,8 @@ contract CreditManager is ICreditManager, ACLTrait, ReentrancyGuard {
         returns (address result)
     {
         result = creditAccounts[borrower]; // F:[CM-43]
+        // todo: imprecise naming, because keeper is not a borrower
+        if (result == address(0)) result = creditAccountsPerKeeper[borrower];
         if (result == address(0)) revert HasNoOpenedAccountException(); // F:[CM-43]
     }
 
@@ -989,5 +1002,39 @@ contract CreditManager is ICreditManager, ACLTrait, ReentrancyGuard {
     {
         creditConfigurator = _creditConfigurator; // F:[CM-56]
         emit NewConfigurator(_creditConfigurator); // F:[CM-56]
+    }
+
+    function grantKeeper(address _keeperAddress)
+        external
+    {
+        address creditAccount = creditAccounts[msg.sender];
+        if (creditAccount == address(0)) revert HasNoOpenedAccountException();
+
+        creditAccountsPerKeeper[_keeperAddress] = creditAccount;
+
+        for (uint256 i = 0; i < keepers[creditAccount].length; i++) {
+            if (keepers[creditAccount][i] == _keeperAddress) {
+                // already present
+                return;
+            }
+        }
+        keepers[creditAccount].push(_keeperAddress);
+    }
+
+    function revokeKeeper(address _keeperAddress)
+        external
+    {
+        address creditAccount = creditAccounts[msg.sender];
+        if (creditAccount == address(0)) revert HasNoOpenedAccountException();
+
+        for (uint256 i = 0; i < keepers[creditAccount].length; i++) {
+            if (keepers[creditAccount][i] == _keeperAddress) {
+                keepers[creditAccount][i] = keepers[creditAccount][keepers[creditAccount].length - 1];
+                keepers[creditAccount].pop();
+                break;
+            }
+        }
+
+        delete creditAccountsPerKeeper[_keeperAddress];
     }
 }
